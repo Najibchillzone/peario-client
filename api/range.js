@@ -1,41 +1,90 @@
-const MAX_CHUNK_BYTES = 2 * 1024 * 1024; // 2 MiB per serverless response (well under Vercel's 4.5 MB limit)
+const dns = require('dns').promises;
+const net = require('net');
 
-function isBlockedHost(hostname) {
-    if (!hostname) return true;
-    const lower = hostname.toLowerCase();
-    if (
-        lower === 'localhost' ||
-        lower === '127.0.0.1' ||
-        lower === '0.0.0.0' ||
-        lower === '::1' ||
-        lower.endsWith('.local') ||
-        lower.endsWith('.internal')
-    ) {
-        return true;
-    }
-    // Block private IPv4 ranges (SSRF protection)
-    const ipv4 = lower.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (ipv4) {
-        const [, a, b] = ipv4.map(Number);
-        if (
-            a === 10 ||
-            a === 127 ||
-            a === 0 ||
-            (a === 169 && b === 254) ||
-            (a === 172 && b >= 16 && b <= 31) ||
-            (a === 192 && b === 168)
-        ) {
-            return true;
-        }
-    }
+const MAX_CHUNK_BYTES = 2 * 1024 * 1024; // 2 MiB per serverless response (well under Vercel's 4.5 MB limit)
+const MAX_REDIRECTS = 5;
+
+function isPrivateIPv4(ip) {
+    const parts = ip.split('.').map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+    const [a, b] = parts;
+    return (
+        a === 0 ||
+        a === 10 ||
+        a === 127 ||
+        (a === 100 && b >= 64 && b <= 127) || // CGNAT
+        (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 168) ||
+        (a === 192 && b === 0) ||
+        (a === 198 && (b === 18 || b === 19)) ||
+        a >= 224 // multicast + reserved
+    );
+}
+
+function isPrivateIPv6(ip) {
+    const lower = ip.toLowerCase();
+    if (lower === '::' || lower === '::1') return true;
+    // IPv4-mapped (::ffff:a.b.c.d or ::ffff:7f00:1)
+    const mappedDotted = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mappedDotted) return isPrivateIPv4(mappedDotted[1]);
+    if (lower.startsWith('::ffff:')) return true; // hex-form mapped: reject conservatively
+    if (/^f[cd]/.test(lower)) return true; // fc00::/7 unique local
+    if (/^fe[89ab]/.test(lower)) return true; // fe80::/10 link-local
+    if (lower.startsWith('ff')) return true; // multicast
     return false;
+}
+
+function isPrivateAddress(ip) {
+    const family = net.isIP(ip);
+    if (family === 4) return isPrivateIPv4(ip);
+    if (family === 6) return isPrivateIPv6(ip);
+    return true;
+}
+
+// Rejects loopback/private/link-local targets, including hostnames that DNS-resolve to them.
+async function assertPublicUrl(urlObj) {
+    if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
+        throw new Error('Unsupported protocol');
+    }
+    // WHATWG URL keeps IPv6 literals wrapped in brackets
+    const host = urlObj.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
+        throw new Error('Blocked host');
+    }
+    if (net.isIP(host)) {
+        if (isPrivateAddress(host)) throw new Error('Blocked host');
+        return;
+    }
+    const addresses = await dns.lookup(host, { all: true });
+    if (!addresses.length || addresses.some(({ address }) => isPrivateAddress(address))) {
+        throw new Error('Blocked host');
+    }
+}
+
+// fetch() with manual redirect handling so every hop is validated, not just the first URL.
+async function safeFetch(startUrl, init) {
+    let current = new URL(startUrl);
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+        await assertPublicUrl(current);
+        const response = await fetch(current.toString(), { ...init, redirect: 'manual' });
+        if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+            if (response.body && typeof response.body.cancel === 'function') {
+                await response.body.cancel().catch(() => {});
+            }
+            current = new URL(response.headers.get('location'), current);
+            continue;
+        }
+        return { response, finalUrl: current.toString() };
+    }
+    throw new Error('Too many redirects');
 }
 
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, X-Resolved-Url');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
 
     if (req.method === 'OPTIONS') {
         res.status(200).end();
@@ -51,26 +100,18 @@ module.exports = async (req, res) => {
     let parsed;
     try {
         parsed = new URL(targetUrl);
+        await assertPublicUrl(parsed);
     } catch (_) {
-        res.status(400).json({ error: 'Invalid url parameter' });
-        return;
-    }
-
-    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || isBlockedHost(parsed.hostname)) {
         res.status(400).json({ error: 'Unsupported target host' });
         return;
     }
 
     try {
-        // Probe mode: fetch 1 byte (bytes=0-0) to discover total file size and resolved redirect URL
+        // Probe mode: fetch 1 byte to discover the total file size and the final (post-redirect) URL
         if (req.query.probe === '1') {
-            const upstream = await fetch(parsed.toString(), {
+            const { response: upstream, finalUrl } = await safeFetch(parsed.toString(), {
                 method: 'GET',
-                headers: {
-                    Range: 'bytes=0-0',
-                    'User-Agent': 'Mozilla/5.0',
-                },
-                redirect: 'follow',
+                headers: { Range: 'bytes=0-0', 'User-Agent': 'Mozilla/5.0' },
             });
 
             let size = null;
@@ -84,23 +125,19 @@ module.exports = async (req, res) => {
                 if (cl) size = Number(cl);
             }
 
-            // Cancel body immediately so we don't download full stream if server ignored Range
+            // Cancel body immediately so we don't download the full stream if the server ignored Range
             if (upstream.body && typeof upstream.body.cancel === 'function') {
                 await upstream.body.cancel().catch(() => {});
             }
 
-            const finalUrl = upstream.url || parsed.toString();
-            let finalParsed;
-            try {
-                finalParsed = new URL(finalUrl);
-            } catch (_) {
-                finalParsed = null;
+            if (!upstream.ok && upstream.status !== 206) {
+                res.status(upstream.status).json({ error: `Upstream HTTP ${upstream.status}` });
+                return;
             }
-            const safeFinalUrl = finalParsed && !isBlockedHost(finalParsed.hostname) ? finalUrl : parsed.toString();
 
             res.status(200).json({
                 size: Number.isFinite(size) && size > 0 ? size : null,
-                finalUrl: safeFinalUrl,
+                finalUrl,
             });
             return;
         }
@@ -111,26 +148,31 @@ module.exports = async (req, res) => {
             ? Math.min(requestedEnd, start + MAX_CHUNK_BYTES - 1)
             : start + MAX_CHUNK_BYTES - 1;
 
-        const upstream = await fetch(parsed.toString(), {
+        const { response: upstream } = await safeFetch(parsed.toString(), {
             method: 'GET',
-            headers: {
-                Range: `bytes=${start}-${end}`,
-                'User-Agent': 'Mozilla/5.0',
-            },
-            redirect: 'follow',
+            headers: { Range: `bytes=${start}-${end}`, 'User-Agent': 'Mozilla/5.0' },
         });
 
         if (!upstream.ok && upstream.status !== 206) {
+            if (upstream.body && typeof upstream.body.cancel === 'function') {
+                await upstream.body.cancel().catch(() => {});
+            }
             res.status(upstream.status).json({ error: `Upstream HTTP ${upstream.status}` });
             return;
         }
 
-        const arrayBuffer = await upstream.arrayBuffer();
-        let buffer = Buffer.from(arrayBuffer);
-
-        // If upstream ignored Range and returned 200 with more bytes than requested, slice safely
         const expectedLen = end - start + 1;
-        if (upstream.status === 200 && start === 0 && buffer.length > expectedLen) {
+        let buffer;
+        if (upstream.status === 200 && start > 0) {
+            // Upstream ignored Range and is sending the whole file from byte 0; refuse rather than buffer it all
+            if (upstream.body && typeof upstream.body.cancel === 'function') {
+                await upstream.body.cancel().catch(() => {});
+            }
+            res.status(416).json({ error: 'Upstream does not support Range requests' });
+            return;
+        }
+        buffer = Buffer.from(await upstream.arrayBuffer());
+        if (buffer.length > expectedLen) {
             buffer = buffer.subarray(0, expectedLen);
         }
 
