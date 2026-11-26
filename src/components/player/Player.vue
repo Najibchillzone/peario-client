@@ -53,6 +53,7 @@ import { computed, getCurrentInstance, onMounted, ref, watch, onUnmounted } from
 import { useI18n } from 'vue-i18n';
 import store from '@/store';
 import HlsService from '@/services/hls.service';
+import WasmAudioService from '@/services/wasmAudio.service';
 
 import LockScreen from "./LockScreen.vue";
 import Subtitle from "./Subtitle.vue";
@@ -67,6 +68,7 @@ import FullScreenControl from "./controls/FullScreen.vue";
 const props = defineProps({
     options: {
         src: String,
+        fileSize: Number,
         hls: String,
         meta: {
             id: String,
@@ -98,9 +100,14 @@ const hlsFailed = ref(false);
 let isSwitchingSource = false;
 
 const applyAudioState = () => {
+    WasmAudioService.setVolume(volume.value);
     if (!videoRef.value) return;
-    videoRef.value.volume = volume.value;
-    videoRef.value.muted = volume.value === 0;
+    if (WasmAudioService.isActive) {
+        videoRef.value.muted = true;
+    } else {
+        videoRef.value.volume = volume.value;
+        videoRef.value.muted = volume.value === 0;
+    }
 };
 
 const safePlay = () => {
@@ -125,6 +132,7 @@ const seekTo = (seekTime) => {
 const loadDirectSource = (seekTime, wasPlaying) => {
     if (!videoRef.value) return;
     HlsService.clear();
+    WasmAudioService.clear();
     videoRef.value.src = props.options.src;
     videoRef.value.load();
     applyAudioState();
@@ -133,6 +141,22 @@ const loadDirectSource = (seekTime, wasPlaying) => {
     seekTo(seekTime);
     if (wasPlaying) {
         safePlay();
+    }
+
+    // Automatically attach client-side WASM audio decoder (AC3/EAC3/DTS/TrueHD)
+    // when playing direct source so audio works universally without Stremio HLS CORS.
+    if (props.options.src) {
+        WasmAudioService.attach(props.options.src, videoRef.value, {
+            fileSize: props.options.fileSize,
+            volume: volume.value,
+        }).then((result) => {
+            if (result && result.active) {
+                applyAudioState();
+                if (toast && result.codec) {
+                    toast.success(`Audio decoder active (${result.codec.toUpperCase()})`);
+                }
+            }
+        }).catch(() => {});
     }
 };
 
@@ -145,6 +169,7 @@ const loadMedia = async (useHls, { preservePosition = false, resumePlayback = fa
 
     try {
         if (useHls && props.options.hls && (HlsService.isSupported() || HlsService.canPlayNative(videoRef.value))) {
+            WasmAudioService.clear();
             await HlsService.loadHls(props.options.hls, videoRef.value, {
                 onFatalError: () => {
                     hlsFailed.value = true;
@@ -152,7 +177,6 @@ const loadMedia = async (useHls, { preservePosition = false, resumePlayback = fa
                         const fallbackTime = videoRef.value.currentTime || seekTime;
                         const fallbackPlaying = !videoRef.value.paused || wasPlaying;
                         loadDirectSource(fallbackTime, fallbackPlaying);
-                        if (toast) toast.success(t('toasts.sourceStream'));
                     }
                 },
             });
@@ -172,9 +196,6 @@ const loadMedia = async (useHls, { preservePosition = false, resumePlayback = fa
     } catch (_) {
         hlsFailed.value = true;
         loadDirectSource(seekTime, wasPlaying);
-        if (toast) {
-            toast.warning('Audio transcoding (HLS) was blocked by Stremio for this domain. Fell back to direct stream (some audio codecs may be silent unless Stremio is launched with NO_CORS=1).', { duration: 7000 });
-        }
     } finally {
         isSwitchingSource = false;
     }
@@ -245,6 +266,7 @@ onMounted(() => {
 
 onUnmounted(() => {
     HlsService.clear();
+    WasmAudioService.clear();
     store.commit('player/updateIsHls', false);
     store.commit('player/updateVideo', null);
     clearTimeout(hideTimeout);

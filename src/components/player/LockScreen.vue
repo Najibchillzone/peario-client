@@ -19,6 +19,7 @@
 <script>
 import store from '../../store';
 import { mapGetters } from 'vuex';
+import WasmAudioService from '@/services/wasmAudio.service';
 
 import AButton from "@/components/ui/Button.vue";
 import TextInput from "@/components/ui/TextInput.vue";
@@ -46,9 +47,10 @@ export default {
             this.$toast.success(this.$t('toasts.clipboard'));
         },
         unlockPlayer() {
+            WasmAudioService.unlock();
             if (this.video) {
                 this.video.volume = store.state.player.volume;
-                this.video.muted = store.state.player.volume === 0;
+                this.video.muted = WasmAudioService.isActive || store.state.player.volume === 0;
                 const canPlay = this.video.play();
                 if (canPlay && typeof canPlay.catch === 'function') {
                     canPlay.catch(() => {});

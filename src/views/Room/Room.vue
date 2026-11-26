@@ -61,13 +61,16 @@ const syncRoom = async () => {
 
         try {
             const isTorrentStream = stream.infoHash != null;
-            const videoUrl = isTorrentStream ? await StremioService.createTorrentStream(stream) : stream.url;
+            const torrentInfo = isTorrentStream ? await StremioService.createTorrentStreamInfo(stream) : null;
+            const videoUrl = torrentInfo ? torrentInfo.url : stream.url;
+            const fileSize = torrentInfo ? torrentInfo.size : null;
             const playlistUrl = videoUrl ? await HlsService.createPlaylist(videoUrl) : null;
 
             playerOptions.value = {
                 meta,
                 isOwner: clientState.value.user.id === owner,
                 src: videoUrl,
+                fileSize,
                 hls: playlistUrl,
             };
 

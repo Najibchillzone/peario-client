@@ -9,6 +9,9 @@
   },
   "dependencies": {
     "@ionic/core": "^7.7.0",
+    "@mediabunny/ac3": "^1.66.5",
+    "@mediabunny/dts": "^1.66.5",
+    "@mediabunny/truehd": "^1.66.5",
     "@meforma/vue-toaster": "^1.3.0",
     "axios": "^1.6.7",
     "change-case": "^5.4.2",
@@ -18,6 +21,7 @@
     "hls.js": "^1.5.3",
     "ionicons": "^7.2.2",
     "langs": "^2.0.0",
+    "mediabunny": "^1.66.5",
     "postscribe": "^2.0.8",
     "querystring-es3": "^0.2.1",
     "stremio-addon-client": "^1.16.1",

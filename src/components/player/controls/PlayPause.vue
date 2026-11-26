@@ -8,6 +8,7 @@
 <script>
 import { mapGetters } from 'vuex';
 import store from '@/store';
+import WasmAudioService from '@/services/wasmAudio.service';
 
 export default {
     name: 'PlayPauseControl',
@@ -23,6 +24,7 @@ export default {
     methods: {
         togglePlay() {
             if ((!this.options.isOwner && !this.autoSync) || this.options.isOwner) {
+                WasmAudioService.unlock();
                 this.paused ? this.video.play() : this.video.pause();
                 store.commit('player/updatePaused', this.video.paused);
                 this.$emit('change', this.paused);

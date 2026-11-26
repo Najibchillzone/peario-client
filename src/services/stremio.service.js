@@ -37,12 +37,24 @@ const StremioService = {
         return data;
     },
 
-    async createTorrentStream(stream) {
+    async createTorrentStreamInfo(stream) {
         let { infoHash, fileIdx = null } = stream;
         const { data } = await axios.get(`${STREMIO_STREAMING_SERVER}/${infoHash}/create`);
         const { files } = data;
-        if (!fileIdx) fileIdx = files.indexOf(files.sort((a, b) => a.length - b.length).reverse()[0]);
-        return `${STREMIO_STREAMING_SERVER}/${infoHash}/${fileIdx}`;
+        if (fileIdx === null || fileIdx === undefined) {
+            const largest = files.reduce((max, file) => (file.length > max.length ? file : max), files[0]);
+            fileIdx = files.indexOf(largest);
+        }
+        const selectedFile = files[fileIdx];
+        return {
+            url: `${STREMIO_STREAMING_SERVER}/${infoHash}/${fileIdx}`,
+            size: selectedFile && typeof selectedFile.length === 'number' ? selectedFile.length : null,
+        };
+    },
+
+    async createTorrentStream(stream) {
+        const { url } = await this.createTorrentStreamInfo(stream);
+        return url;
     },
 
     async getStats(streamUrl) {
