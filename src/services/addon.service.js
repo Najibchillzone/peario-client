@@ -9,8 +9,8 @@ const AddonService = {
 
         const filter = (manifest, resource, prefix = null) => {
             const { id, idPrefixes, resources, types } = manifest;
-            return id !== 'community.peario' && ((prefix ? idPrefixes && idPrefixes.includes(prefix) : true) && resources && resources.includes(resource) && (types.includes('movie') || types.includes('series')))
-            || (resources.find(({ name, idPrefixes, types }) => name === resource && (prefix ? idPrefixes && idPrefixes.includes(prefix) : true) && types && (types.includes('movie') || types.includes('series'))));
+            return (!id || !id.startsWith('community.peario')) && ((prefix ? idPrefixes && idPrefixes.includes(prefix) : true) && resources && resources.includes(resource) && (types.includes('movie') || types.includes('series')))
+            || ((!id || !id.startsWith('community.peario')) && resources && resources.find(({ name, idPrefixes, types }) => name === resource && (prefix ? idPrefixes && idPrefixes.includes(prefix) : true) && types && (types.includes('movie') || types.includes('series'))));
         };
 
         const streams = col.getAddons().filter(({ manifest }) => filter(manifest, 'stream', 'tt'));
