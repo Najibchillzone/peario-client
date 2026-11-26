@@ -53,7 +53,9 @@ const usersList = computed(() => clientRoomState.value && clientState.value.room
 const isUserOwner = computed(() => clientState.value && clientState.value.user && clientState.value.user.id ? roomOwner.value === clientState.value.user.id : false);
 
 const syncRoom = async () => {
+    if (!clientState.value.room) return;
     const { stream, meta, player, owner } = clientState.value.room;
+    const currentUserId = clientState.value.user && clientState.value.user.id;
 
     if (!initialized.value) {
         if (initializing.value) return;
@@ -68,7 +70,7 @@ const syncRoom = async () => {
 
             playerOptions.value = {
                 meta,
-                isOwner: clientState.value.user.id === owner,
+                isOwner: Boolean(currentUserId && currentUserId === owner),
                 src: videoUrl,
                 fileSize,
                 hls: playlistUrl,
@@ -82,7 +84,7 @@ const syncRoom = async () => {
         playerOptions.value = {
             ...playerOptions.value,
             meta,
-            isOwner: clientState.value.user.id === owner,
+            isOwner: Boolean(currentUserId && currentUserId === owner),
         };
     }
 
@@ -124,6 +126,12 @@ const onUpdateOwnership = (userId) => {
 
 watch(clientRoomState, () => {
     syncRoom();
+});
+
+watch(() => clientState.value.user, () => {
+    if (clientState.value.room) {
+        syncRoom();
+    }
 });
 
 let syncPlayerInterval = null;

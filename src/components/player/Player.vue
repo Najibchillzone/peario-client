@@ -143,19 +143,18 @@ const loadDirectSource = (seekTime, wasPlaying) => {
         safePlay();
     }
 
-    // Automatically attach client-side WASM audio decoder (AC3/EAC3/DTS/TrueHD)
-    // when playing direct source so audio works universally without Stremio HLS CORS.
+    // Automatically attach client-side WASM audio decoder (AC3/EAC3/DTS/TrueHD/5.1+)
+    // when playing direct source so audio works universally on both torrent and HTTP/Debrid streams.
     if (props.options.src) {
         WasmAudioService.attach(props.options.src, videoRef.value, {
             fileSize: props.options.fileSize,
             volume: volume.value,
-        }).then((result) => {
-            if (result && result.active) {
+            onActivated: (result) => {
                 applyAudioState();
-                if (toast && result.codec) {
+                if (toast && result && result.codec) {
                     toast.success(`Audio decoder active (${result.codec.toUpperCase()})`);
                 }
-            }
+            },
         }).catch(() => {});
     }
 };
