@@ -16,8 +16,9 @@
 
         <Subtitle v-if="videoRef" :timecode="currentTime" :controlsShown="!controlsHidden"></Subtitle>
 
-        <video ref="videoRef" :src="options.src" :poster="options.meta.background"
+        <video ref="videoRef" :poster="options.meta.background"
             @click="showControls"
+            @error="onVideoError"
             @timeupdate="updateCurrentTime"
             @waiting="() => updateBuffering(true)"
             @loadedmetadata="() => updateBuffering(false)"
@@ -40,7 +41,7 @@
             <div class="panel">
                 <VolumeContol class="control" />
                 <SubtitlesControl class="control" v-if="options.src && options.meta" :videoUrl="options.src" :meta="options.meta" :userSubtitle="userSubtitle" />
-                <HlsControl class="control" v-if="options.hls" :options="options" />
+                <HlsControl class="control" v-if="options.hls" @toggle="toggleHls" />
                 <FullScreenControl class="control" :player="playerRef" :video="videoRef" />
             </div>
         </div>
@@ -48,8 +49,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch, onUnmounted } from 'vue';
+import { computed, getCurrentInstance, onMounted, ref, watch, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import store from '@/store';
+import HlsService from '@/services/hls.service';
 
 import LockScreen from "./LockScreen.vue";
 import Subtitle from "./Subtitle.vue";
@@ -76,6 +79,9 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['change']);
+const { t } = useI18n();
+const instance = getCurrentInstance();
+const toast = instance && instance.appContext.config.globalProperties.$toast;
 
 const locked = computed(() => store.state.player.locked);
 const paused = computed(() => store.state.player.paused);
@@ -83,13 +89,109 @@ const currentTime = computed(() => store.state.player.currentTime);
 const controlsHidden = computed(() => store.state.player.controlsHidden);
 const buffering = computed(() => store.state.player.buffering);
 const volume = computed(() => store.state.player.volume);
+const isHls = computed(() => store.state.player.isHls);
 
 const playerRef = ref(null);
 const videoRef = ref(null);
 const userSubtitle = ref(null);
+const hlsFailed = ref(false);
+let isSwitchingSource = false;
 
-watch(volume, (value) => {
-    videoRef.value.volume = value;
+const applyAudioState = () => {
+    if (!videoRef.value) return;
+    videoRef.value.volume = volume.value;
+    videoRef.value.muted = volume.value === 0;
+};
+
+const safePlay = () => {
+    if (!videoRef.value) return;
+    const playPromise = videoRef.value.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {});
+    }
+};
+
+const seekTo = (seekTime) => {
+    if (!videoRef.value || !seekTime || seekTime <= 0) return;
+    if (videoRef.value.readyState >= 1) {
+        videoRef.value.currentTime = seekTime;
+    } else {
+        videoRef.value.addEventListener('loadedmetadata', () => {
+            if (videoRef.value) videoRef.value.currentTime = seekTime;
+        }, { once: true });
+    }
+};
+
+const loadDirectSource = (seekTime, wasPlaying) => {
+    if (!videoRef.value) return;
+    HlsService.clear();
+    videoRef.value.src = props.options.src;
+    videoRef.value.load();
+    applyAudioState();
+    store.commit('player/updateIsHls', false);
+
+    seekTo(seekTime);
+    if (wasPlaying) {
+        safePlay();
+    }
+};
+
+const loadMedia = async (useHls, { preservePosition = false, resumePlayback = false, notify = false } = {}) => {
+    if (!videoRef.value || isSwitchingSource) return;
+    isSwitchingSource = true;
+
+    const seekTime = preservePosition ? videoRef.value.currentTime : 0;
+    const wasPlaying = resumePlayback && !videoRef.value.paused;
+
+    try {
+        if (useHls && props.options.hls && (HlsService.isSupported() || HlsService.canPlayNative(videoRef.value))) {
+            await HlsService.loadHls(props.options.hls, videoRef.value, {
+                onFatalError: () => {
+                    hlsFailed.value = true;
+                    if (videoRef.value && props.options.src) {
+                        const fallbackTime = videoRef.value.currentTime || seekTime;
+                        const fallbackPlaying = !videoRef.value.paused || wasPlaying;
+                        loadDirectSource(fallbackTime, fallbackPlaying);
+                        if (toast) toast.success(t('toasts.sourceStream'));
+                    }
+                },
+            });
+
+            applyAudioState();
+            store.commit('player/updateIsHls', true);
+
+            seekTo(seekTime);
+            if (wasPlaying) {
+                safePlay();
+            }
+            if (notify && toast) toast.success(t('toasts.hlsStream'));
+        } else {
+            loadDirectSource(seekTime, wasPlaying);
+            if (notify && toast) toast.success(t('toasts.sourceStream'));
+        }
+    } catch (_) {
+        hlsFailed.value = true;
+        loadDirectSource(seekTime, wasPlaying);
+        if (notify && toast) toast.success(t('toasts.sourceStream'));
+    } finally {
+        isSwitchingSource = false;
+    }
+};
+
+const toggleHls = () => {
+    const nextIsHls = !isHls.value;
+    if (nextIsHls) hlsFailed.value = false;
+    loadMedia(nextIsHls, { preservePosition: true, resumePlayback: true, notify: true });
+};
+
+const onVideoError = () => {
+    if (!isHls.value && !hlsFailed.value && props.options.hls) {
+        loadMedia(true, { preservePosition: true, resumePlayback: true, notify: true });
+    }
+};
+
+watch(volume, () => {
+    applyAudioState();
 });
 
 let hideTimeout = null;
@@ -131,10 +233,17 @@ const onSubtitlesDropped = (event) => {
 onMounted(() => {
     store.commit('player/updateLockState', true);
     store.commit('player/updateVideo', videoRef.value);
-    videoRef.value.volume = volume.value;
+    applyAudioState();
+
+    const shouldUseHls = Boolean(
+        props.options.hls && (HlsService.isSupported() || HlsService.canPlayNative(videoRef.value))
+    );
+    loadMedia(shouldUseHls);
 });
 
 onUnmounted(() => {
+    HlsService.clear();
+    store.commit('player/updateIsHls', false);
     store.commit('player/updateVideo', null);
     clearTimeout(hideTimeout);
     hideTimeout = null;

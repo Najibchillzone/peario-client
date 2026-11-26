@@ -8,7 +8,8 @@ export default {
         controlsHidden: false,
         buffering: true,
         volume: 0.5,
-        autoSync: true
+        autoSync: true,
+        isHls: false
     },
     getters: {
         video(state) {
@@ -34,6 +35,9 @@ export default {
         },
         autoSync(state) {
             return state.autoSync;
+        },
+        isHls(state) {
+            return state.isHls;
         }
     },
     mutations: {
@@ -47,10 +51,10 @@ export default {
             state.currentTime = value;
         },
         updateVideoSrc(state, value) {
-            state.video.src = value;
+            if (state.video) state.video.src = value;
         },
         updateVideoCurrentTime(state, value) {
-            state.video.currentTime = value;
+            if (state.video) state.video.currentTime = value;
         },
         updateAutoSync(state, value) {
             state.autoSync = value;
@@ -66,6 +70,9 @@ export default {
         },
         updateVolume(state, value) {
             state.volume = value;
+        },
+        updateIsHls(state, value) {
+            state.isHls = value;
         }
     },
     actions: {

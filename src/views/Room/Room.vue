@@ -39,9 +39,10 @@ import HlsService from "@/services/hls.service";
 import ClientService from "@/services/client.service";
 import { onBeforeRouteLeave } from 'vue-router';
 
-const initialized = ref(false); 
-const playerOptions = ref(null); 
-const isChatOpen = ref(false); 
+const initialized = ref(false);
+const initializing = ref(false);
+const playerOptions = ref(null);
+const isChatOpen = ref(false);
 
 const clientState = computed(() => store.state.client);
 const clientRoomState = computed(() => store.state.client.room);
@@ -54,31 +55,32 @@ const isUserOwner = computed(() => clientState.value && clientState.value.user &
 const syncRoom = async () => {
     const { stream, meta, player, owner } = clientState.value.room;
 
-    playerOptions.value = {
-        ...playerOptions.value,
-        meta,
-        isOwner: clientState.value.user.id === owner,
-    };
-
     if (!initialized.value) {
-        const isTorrentStream = stream.infoHash != null;
-    
-        const videoUrl = isTorrentStream ? await StremioService.createTorrentStream(stream) : stream.url;
-        playerOptions.value = {
-            ...playerOptions.value,
-            src: videoUrl,
-            hls: null,
-        };
+        if (initializing.value) return;
+        initializing.value = true;
 
-        if (isTorrentStream) {
-            const playlistUrl = await HlsService.createPlaylist(videoUrl);
+        try {
+            const isTorrentStream = stream.infoHash != null;
+            const videoUrl = isTorrentStream ? await StremioService.createTorrentStream(stream) : stream.url;
+            const playlistUrl = videoUrl ? await HlsService.createPlaylist(videoUrl) : null;
+
             playerOptions.value = {
-                ...playerOptions.value,
+                meta,
+                isOwner: clientState.value.user.id === owner,
+                src: videoUrl,
                 hls: playlistUrl,
             };
-        }
 
-        initialized.value = true;
+            initialized.value = true;
+        } finally {
+            initializing.value = false;
+        }
+    } else {
+        playerOptions.value = {
+            ...playerOptions.value,
+            meta,
+            isOwner: clientState.value.user.id === owner,
+        };
     }
 
     if (playerState.value.autoSync && playerState.value.video && !playerState.value.locked) {
@@ -89,7 +91,14 @@ const syncRoom = async () => {
             playerState.value.video.currentTime = time;
         }
 
-        paused ? playerState.value.video.pause() : playerState.value.video.play();
+        if (paused) {
+            playerState.value.video.pause();
+        } else {
+            const playPromise = playerState.value.video.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch(() => {});
+            }
+        }
         store.commit('player/updatePaused', playerState.value.video.paused);
         playerState.value.buffering = buffering;
     }

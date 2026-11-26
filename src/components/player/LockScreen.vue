@@ -46,9 +46,15 @@ export default {
             this.$toast.success(this.$t('toasts.clipboard'));
         },
         unlockPlayer() {
-            const canPlay = this.video.play();
-            canPlay.catch(() => {});
-            this.video.pause();
+            if (this.video) {
+                this.video.volume = store.state.player.volume;
+                this.video.muted = store.state.player.volume === 0;
+                const canPlay = this.video.play();
+                if (canPlay && typeof canPlay.catch === 'function') {
+                    canPlay.catch(() => {});
+                }
+                this.video.pause();
+            }
             store.commit('player/updateLockState', false);
         }
     }

@@ -42,18 +42,24 @@ export default {
                 this.volumeTmp = this.volume;
                 this.volumeInput = 0;
             } else {
-                this.volumeInput = this.volumeTmp;
+                this.volumeInput = this.volumeTmp || 0.5;
             }
         },
         onMouseWheel({ deltaY }) {
-            this.volumeInput = parseFloat((deltaY < 0 ? this.volumeInput < 1 ? this.volumeInput += 0.1 : 1 : this.volumeInput > 0 ? this.volumeInput -= 0.1 : 0).toFixed(1));
+            const current = parseFloat(this.volumeInput) || 0;
+            const next = deltaY < 0 ? Math.min(1, current + 0.1) : Math.max(0, current - 0.1);
+            this.volumeInput = parseFloat(next.toFixed(1));
         }
     },
     mounted() {
-        this.video.onmousewheel = this.onMouseWheel;
+        if (this.video) {
+            this.video.addEventListener('wheel', this.onMouseWheel);
+        }
     },
     unmounted() {
-        this.video.removeEventListener('mousewheel', this.onMouseWheel);
+        if (this.video) {
+            this.video.removeEventListener('wheel', this.onMouseWheel);
+        }
     }
 }
 </script>
