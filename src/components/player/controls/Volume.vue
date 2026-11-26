@@ -27,8 +27,8 @@ export default {
     }),
     data() {
         return {
-            volumeTmp: 0,
-            volumeInput: this.volume
+            volumeTmp: 0.5,
+            volumeInput: store.state.player.volume
         };
     },
     watch: {

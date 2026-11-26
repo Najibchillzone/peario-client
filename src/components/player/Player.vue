@@ -172,7 +172,9 @@ const loadMedia = async (useHls, { preservePosition = false, resumePlayback = fa
     } catch (_) {
         hlsFailed.value = true;
         loadDirectSource(seekTime, wasPlaying);
-        if (notify && toast) toast.success(t('toasts.sourceStream'));
+        if (toast) {
+            toast.warning('Audio transcoding (HLS) was blocked by Stremio for this domain. Fell back to direct stream (some audio codecs may be silent unless Stremio is launched with NO_CORS=1).', { duration: 7000 });
+        }
     } finally {
         isSwitchingSource = false;
     }
